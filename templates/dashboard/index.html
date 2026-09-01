@@ -1,0 +1,201 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>FloodSentry</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <script src="https://unpkg.com/maplibre-gl@4.1.2/dist/maplibre-gl.js"></script>
+  <link href="https://unpkg.com/maplibre-gl@4.1.2/dist/maplibre-gl.css" rel="stylesheet"/>
+  <style>
+    body { margin: 0; font-family: system-ui, sans-serif; display: flex; height: 100vh; }
+    #map { flex: 1; }
+    #panel { width: 430px; overflow-y: auto; padding: 16px; background: #0e1726; color: #e2e8f0; }
+    #panel h1 { font-size: 18px; margin: 0 0 4px; }
+    #panel .meta { color: #94a3b8; font-size: 13px; margin: 4px 0 12px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    td, th { padding: 5px 6px; text-align: left; border-bottom: 1px solid #1e293b; }
+    th { color: #94a3b8; font-weight: 600; }
+    tbody tr { cursor: pointer; }
+    tbody tr:hover { background: #1e293b; }
+    .band-Low { color: #22c55e; }
+    .band-Watch { color: #eab308; }
+    .band-Warning { color: #f97316; }
+    .band-Extreme { color: #ef4444; }
+    .legend { margin-top: 14px; padding: 10px; background: #111c30; border: 1px solid #1e293b; border-radius: 6px; font-size: 12px; }
+    .legend h3 { margin: 0 0 6px; font-size: 12px; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.05em; }
+    .legend .row { display: flex; align-items: center; gap: 6px; margin: 3px 0; color: #cbd5e1; }
+    .swatch { width: 14px; height: 10px; display: inline-block; border-radius: 2px; }
+    .swatch-band { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+    .maplibregl-popup-content { font-size: 13px; line-height: 1.45; }
+    .maplibregl-popup-content b { font-size: 14px; }
+  </style>
+</head>
+<body>
+  <div id="panel">
+    <h1>FloodSentry &mdash; Nairobi</h1>
+    {% if event %}
+      <p class="meta">{{ event.name }} &mdash; submergence duration {{ event.duration_h }}h</p>
+      <table id="risk-table">
+        <thead>
+          <tr><th>Ward</th><th>Risk</th><th>Band</th><th>Displaced</th><th>Loss (KES)</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      <div class="legend" id="seasonal-box" style="display:none">
+        <h3>Seasonal outlook &mdash; <span id="seasonal-label"></span></h3>
+        <p class="meta" id="seasonal-note" style="margin:4px 0 8px"></p>
+        <table id="seasonal-table">
+          <thead>
+            <tr><th>Ward</th><th>Baseline</th><th>Moderate</th><th>Strong</th><th>Worst band</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+        <p style="margin:8px 0 0;color:#94a3b8">Cells: displaced people per scenario; "Strong" = 6 Mar 2026 analogue (160 mm / 3&ndash;5 h).</p>
+      </div>
+      <div class="legend">
+        <h3>Forecast water depth</h3>
+        <div class="row"><span class="swatch" style="background:#60a5fa"></span> 0.3 &ndash; 1.0 m</div>
+        <div class="row"><span class="swatch" style="background:#3b82f6"></span> 1.0 &ndash; 2.0 m</div>
+        <div class="row"><span class="swatch" style="background:#1d4ed8"></span> 2.0 &ndash; 3.0 m</div>
+        <div class="row"><span class="swatch" style="background:#1e3a8a"></span> &gt; 3.0 m</div>
+        <h3 style="margin-top:10px">Ward risk band (outline)</h3>
+        <div class="row"><span class="swatch-band" style="background:#22c55e"></span> Low</div>
+        <div class="row"><span class="swatch-band" style="background:#eab308"></span> Watch</div>
+        <div class="row"><span class="swatch-band" style="background:#f97316"></span> Warning</div>
+        <div class="row"><span class="swatch-band" style="background:#ef4444"></span> Extreme</div>
+        <p style="margin:8px 0 0;color:#94a3b8">Hover a ward or flood polygon for details; click a table row to zoom.</p>
+      </div>
+    {% else %}
+      <p class="meta">No forecast events yet.</p>
+      <p>Run <code>python manage.py load_demo_data</code> then <code>python manage.py run_forecast</code>.</p>
+    {% endif %}
+  </div>
+  <div id="map"></div>
+  <script>
+    const eventId = {{ event.id|default:"null" }};
+    const BAND_COLORS = ["match", ["get", "risk_band"],
+      "Low", "#22c55e", "Watch", "#eab308", "Warning", "#f97316", "Extreme", "#ef4444",
+      "#94a3b8"];
+    const fmt = n => Number(n).toLocaleString();
+
+    const map = new maplibregl.Map({
+      container: "map",
+      style: {
+        version: 8,
+        glyphs: "https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf",
+        sources: {
+          osm: {
+            type: "raster",
+            tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
+            tileSize: 256,
+            maxzoom: 19,
+            attribution: "&copy; OpenStreetMap contributors",
+          },
+        },
+        layers: [{ id: "osm", type: "raster", source: "osm" }],
+      },
+      center: [36.85, -1.27],
+      zoom: 11,
+    });
+    map.addControl(new maplibregl.NavigationControl());
+    map.addControl(new maplibregl.ScaleControl(), "bottom-left");
+
+    map.on("load", async () => {
+      if (!eventId) return;
+      const [flood, wards] = await Promise.all([
+        fetch(`/api/events/${eventId}/flood-polygons.geojson`).then(r => r.json()),
+        fetch(`/api/events/${eventId}/wards.geojson`).then(r => r.json()),
+      ]);
+
+      map.addSource("wards", { type: "geojson", data: wards });
+      map.addLayer({
+        id: "ward-fill", type: "fill", source: "wards",
+        paint: { "fill-color": BAND_COLORS, "fill-opacity": 0.10 },
+      });
+      map.addLayer({
+        id: "ward-line", type: "line", source: "wards",
+        paint: { "line-color": BAND_COLORS, "line-width": 2.5, "line-opacity": 0.9 },
+      });
+
+      map.addSource("flood", { type: "geojson", data: flood });
+      map.addLayer({
+        id: "flood-fill", type: "fill", source: "flood",
+        paint: {
+          "fill-color": ["interpolate", ["linear"], ["get", "depth_m"],
+            0.3, "#60a5fa", 1.0, "#3b82f6", 2.0, "#1d4ed8", 3.0, "#1e3a8a"],
+          "fill-opacity": 0.6,
+        },
+      });
+      map.addLayer({
+        id: "flood-outline", type: "line", source: "flood",
+        paint: { "line-color": "#93c5fd", "line-width": 1 },
+      });
+
+      const popup = new maplibregl.Popup({ closeButton: false, maxWidth: "280px" });
+      map.on("mousemove", "ward-fill", (e) => {
+        map.getCanvas().style.cursor = "pointer";
+        const p = e.features[0].properties;
+        popup.setLngLat(e.lngLat).setHTML(
+          `<b>${p.name}</b> &mdash; <span class="band-${p.risk_band}">${p.risk_band}</span> (${p.risk_score})<br>` +
+          `Population: ${fmt(p.population)}<br>` +
+          `People affected: ${fmt(p.people_affected)} &middot; Displaced: ${fmt(p.people_displaced)}<br>` +
+          `Buildings affected: ${fmt(p.buildings_affected)}<br>` +
+          `Roads submerged: ${fmt(p.roads_submerged_m)} m<br>` +
+          `Facilities at risk: ${p.facilities_at_risk}<br>` +
+          `Loss: KES ${fmt(p.loss_kes)}`
+        ).addTo(map);
+      });
+      map.on("mouseleave", "ward-fill", () => {
+        map.getCanvas().style.cursor = "";
+        popup.remove();
+      });
+
+      map.on("click", "flood-fill", (e) => {
+        const p = e.features[0].properties;
+        new maplibregl.Popup({ maxWidth: "240px" })
+          .setLngLat(e.lngLat)
+          .setHTML(`<b>Flooded area</b><br>Forecast depth: ${p.depth_m} m<br>Lead time: +${p.lead_h} h`)
+          .addTo(map);
+      });
+
+      const risks = await fetch(`/api/events/${eventId}/ward-risk/`).then(r => r.json());
+      const tbody = document.querySelector("#risk-table tbody");
+      for (const r of risks) {
+        const tr = document.createElement("tr");
+        tr.innerHTML =
+          `<td>${r.ward}</td>` +
+          `<td>${r.risk_score.toFixed(1)}</td>` +
+          `<td class="band-${r.risk_band}">${r.risk_band}</td>` +
+          `<td>${fmt(r.people_displaced)}</td>` +
+          `<td>${fmt(Math.round(r.loss_kes))}</td>`;
+        tr.addEventListener("click", () => {
+          const f = wards.features.find(f => f.properties.name === r.ward);
+          if (f) map.flyTo({ center: [f.properties.center_lon, f.properties.center_lat], zoom: 12.5 });
+        });
+        tbody.appendChild(tr);
+      }
+
+      const outlook = await fetch("/api/seasonal-outlooks/latest/").then(r => r.json());
+      if (outlook && outlook.outlook !== null) {
+        document.getElementById("seasonal-box").style.display = "block";
+        document.getElementById("seasonal-label").textContent =
+          `${outlook.season} ${outlook.enso_phase} (${Math.round(outlook.probability_above_normal * 100)}% above-normal)`;
+        document.getElementById("seasonal-note").textContent = outlook.source_note;
+        const sbody = document.querySelector("#seasonal-table tbody");
+        for (const w of outlook.wards) {
+          const b = w.scenarios.baseline, m = w.scenarios.moderate, s = w.scenarios.strong;
+          const worst = [b, m, s].sort((a, b2) => b2.loss_kes - a.loss_kes)[0];
+          const tr = document.createElement("tr");
+          tr.innerHTML =
+            `<td>${w.ward}</td>` +
+            `<td>${fmt(b.displaced)}</td>` +
+            `<td>${fmt(m.displaced)}</td>` +
+            `<td class="band-${s.risk_band}">${fmt(s.displaced)}</td>` +
+            `<td class="band-${worst.risk_band}">${worst.risk_band}</td>`;
+          sbody.appendChild(tr);
+        }
+      }
+    });
+  </script>
+</body>
+</html>

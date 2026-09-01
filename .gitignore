@@ -1,0 +1,66 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+.python-version
+
+# Testing / tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Geospatial data artifacts (keep repos small; data lives in S3/DVC)
+*.gpkg
+*.shp
+*.shx
+*.dbf
+*.prj
+*.cpg
+*.tif
+*.tiff
+*.nc
+*.grib
+*.grib2
+*.hdf5
+*.h5
+*.zarr/
+*.parquet
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+secrets/
+
+# Node / dashboard
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+
+# DVC / MLflow
+.dvc/cache/
+mlruns/
+staticfiles/
+
+# Editors & OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Command Code
+.commandcode/
